@@ -15,8 +15,11 @@ class GatewayService:
     async def ocrProcess(self,urlImage:str)-> OcrResponse:
         extractData:OcrProcess = await self.ocrService.doOcrFromImageUrl(urlImage)
         jsonFromGroq:OcrResponse =  self.groqService.getJsonFromOcrText(extractData.text) 
-        imageId:str =  self.uploadService.upload_image(extractData.imageProccesed)["imageId"]
-        jsonFromGroq.imagePath = imageId
+        try:
+            imageId:str =  self.uploadService.upload_image(extractData.imageProccesed)["imageId"]
+            jsonFromGroq.imagePath = imageId
+        except Exception as exc:
+            jsonFromGroq.dataFields["processedImageUploadError"] = str(exc)
         return jsonFromGroq
         
         

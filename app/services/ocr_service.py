@@ -1,7 +1,7 @@
 from paddleocr import PaddleOCR
 from fastapi import UploadFile
-from PIL import Image
-from typing import Optional
+from PIL import Image, UnidentifiedImageError
+from typing import List, Optional
 import os
 import shutil
 import io
@@ -22,18 +22,29 @@ class OcrService:
         # Asegurar que la carpeta output existe al iniciar
         if not os.path.exists(self.outputDir):
             os.makedirs(self.outputDir)
+
+    def _open_rgb_image(self, image_bytes: bytes) -> Image.Image:
+        try:
+            image = Image.open(io.BytesIO(image_bytes))
+            image.load()
+        except UnidentifiedImageError as exc:
+            raise ValueError("El archivo recibido no es una imagen valida") from exc
+
+        return image.convert("RGB")
     
     async def doOcrFromFile(self,file:UploadFile)->OcrProcess:
+        self.cleanOutputDir()
         image_bytes= await file.read()
-        image = Image.open(io.BytesIO(image_bytes))
+        image = self._open_rgb_image(image_bytes)
+        image_np = np.array(image)
         
-        result = self.ocrClient.predict(image)
+        result = self.ocrClient.predict(input=image_np)
         
         for row in result:
             row.save_to_img(self.outputDir)
         
-        ocr_image = self.getOcrImageFromSystemFile() 
-        result_text = str(result[0]["rec_texts"])
+        ocr_image = self.getOcrImageFromSystemFile() or image
+        result_text = self._get_result_text(result)
         
         return OcrProcess(result_text,ocr_image)
         
@@ -43,7 +54,7 @@ class OcrService:
         if response.status_code != 200:
             raise ValueError("No se pudo obtener la imagen desde la URL")
     
-        image = Image.open(io.BytesIO(response.content))
+        image = self._open_rgb_image(response.content)
         image_np = np.array(image)
         
         result = self.ocrClient.predict(input=image_np)
@@ -51,10 +62,35 @@ class OcrService:
         for row in result:
             row.save_to_img(self.outputDir)
         
-        ocr_image = self.getOcrImageFromSystemFile() 
-        result_text = str(result[0]["rec_texts"])
+        ocr_image = self.getOcrImageFromSystemFile() or image
+        result_text = self._get_result_text(result)
         
         return OcrProcess(result_text,ocr_image)
+
+    def _get_result_text(self, result) -> str:
+        if not result:
+            return ""
+
+        lines: List[str] = []
+        for row in result:
+            texts = None
+            if isinstance(row, dict):
+                texts = row.get("rec_texts")
+            else:
+                try:
+                    texts = row["rec_texts"]
+                except Exception:
+                    texts = None
+
+            if isinstance(texts, list):
+                lines.extend(str(text).strip() for text in texts if str(text).strip())
+            elif texts:
+                lines.append(str(texts).strip())
+
+        if lines:
+            return "\n".join(lines)
+
+        return str(result)
         
     def getOcrImageFromSystemFile(self) -> Optional[Image.Image]:
         # Buscar la primera imagen con 'ocr' en su nombre dentro de outputDir

@@ -9,5 +9,11 @@ class OcrResponse(BaseModel):
     amount: Decimal
     name: str
     issueDate: date
-    receiptNumber: str
+    # Opcionales a proposito. Antes receiptNumber devolvia el literal
+    # "OCR-PENDING" cuando no se encontraba numero, y ese centinela hacia que
+    # todos los comprobantes ilegibles compartieran el mismo valor: con el
+    # indice unico del backend, el segundo usuario con una foto borrosa habria
+    # quedado bloqueado por el primero. Ausente tiene que ser null, no un texto.
+    receiptNumber: Optional[str] = None
+    issuerRuc: Optional[str] = None
     dataFields: Dict[str, Any]

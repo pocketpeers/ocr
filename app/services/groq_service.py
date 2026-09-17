@@ -4,14 +4,21 @@ from groq import Groq
 from groq import APIStatusError, APIConnectionError
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import json
 import re
 
 class GroqService:
     client:Groq
-    model:str = "llama-3.3-70b-versatile"
-    
+    # Groq retiro llama-3.3-70b-versatile de su catalogo y devolvia
+    # "404 model_not_found", asi que toda peticion caia al parser de regex de
+    # _parse_receipt_text sin que se notara: el JSON llegaba igual, solo que
+    # con "parser": "fallback" en dataFields.
+    #
+    # Groq rota su catalogo cada cierto tiempo. Si vuelve a dar 404, la lista
+    # vigente esta en https://api.groq.com/openai/v1/models
+    model:str = "openai/gpt-oss-20b"
+
     def __init__(self):
         self.apiKey = settings_service.settings.GROQ_API_KEY
         self.client = Groq(api_key=self.apiKey)
@@ -27,9 +34,14 @@ class GroqService:
             '"name": "string", '
             '"issueDate": "YYYY-MM-DD", '
             '"receiptNumber": "string", '
+            '"issuerRuc": "string", '
             '"dataFields": { "key": "value" }'
             '} '
-            "Si no encuentras un dato, usa los valores ya inferidos en el texto del usuario."
+            "El issuerRuc son los 11 digitos del RUC del emisor, sin espacios ni guiones. "
+            "Si no encuentras un dato, usa los valores ya inferidos en el texto del usuario. "
+            "Si un dato no aparece ni fue inferido, responde null: nunca inventes un "
+            "numero de comprobante ni un RUC, porque el backend los usa para detectar "
+            "boletas repetidas y un valor inventado acusaria a un usuario honesto."
         )
         
         messages = [
@@ -69,6 +81,7 @@ class GroqService:
         amount = self._extract_amount(lines)
         issue_date = self._extract_date(lines)
         receipt_number = self._extract_receipt_number(lines)
+        issuer_ruc = self._extract_ruc(lines)
         name = self._extract_name(lines)
 
         return OcrResponse(
@@ -76,6 +89,7 @@ class GroqService:
             name=name,
             issueDate=issue_date,
             receiptNumber=receipt_number,
+            issuerRuc=issuer_ruc,
             dataFields={
                 "rawText": "\n".join(lines),
                 "detectedLines": lines,
@@ -138,7 +152,7 @@ class GroqService:
 
         return datetime.now().date()
 
-    def _extract_receipt_number(self, lines: List[str]) -> str:
+    def _extract_receipt_number(self, lines: List[str]) -> Optional[str]:
         pattern = re.compile(
             r"(?:boleta|factura|ticket|recibo|nro|n\.|numero|serie|doc(?:umento)?)\D*([A-Z0-9]{1,6}[- ]?\d{3,12})",
             re.IGNORECASE,
@@ -147,14 +161,64 @@ class GroqService:
         for line in lines:
             match = pattern.search(line)
             if match:
-                return match.group(1).replace(" ", "-")
+                return self._normalize_receipt_number(match.group(1))
 
         for line in lines:
             match = re.search(r"\b([A-Z]\d{3}[- ]?\d{3,12}|\d{3,6}[- ]\d{3,12})\b", line, re.IGNORECASE)
             if match:
-                return match.group(1).replace(" ", "-")
+                return self._normalize_receipt_number(match.group(1))
 
-        return "OCR-PENDING"
+        # None, no un centinela. El backend compara este valor contra los ya
+        # registrados para detectar boletas repetidas: cualquier texto fijo
+        # haria que dos comprobantes ilegibles distintos parecieran el mismo.
+        return None
+
+    def _normalize_receipt_number(self, raw: str) -> str:
+        # A mayusculas porque el OCR alterna entre "B001-123" y "b001-123" sobre
+        # la misma boleta, y dos grafias del mismo documento tienen que colapsar
+        # en la misma llave o la deteccion de duplicados se pierde.
+        return raw.replace(" ", "-").upper()
+
+    def _extract_ruc(self, lines: List[str]) -> Optional[str]:
+        """RUC del emisor: 11 digitos que empiezan en 10, 15, 17 o 20.
+
+        Se prefiere el que aparece junto a la palabra RUC y, entre varios, el
+        que pasa el digito verificador. El respaldo existe porque el OCR
+        confunde digitos con frecuencia: si ningun candidato valida, vale mas
+        entregar el rotulado que ninguno, ya que el backend solo lo usa junto
+        con el numero de comprobante y nunca por si solo.
+        """
+        labelled: List[str] = []
+        loose: List[str] = []
+
+        for line in lines:
+            for match in re.finditer(r"\b((?:10|15|17|20)\d{9})\b", line):
+                candidate = match.group(1)
+                if re.search(r"r\.?\s*u\.?\s*c", line, re.IGNORECASE):
+                    labelled.append(candidate)
+                else:
+                    loose.append(candidate)
+
+        for group in (labelled, loose):
+            for candidate in group:
+                if self._is_valid_ruc(candidate):
+                    return candidate
+
+        return labelled[0] if labelled else None
+
+    @staticmethod
+    def _is_valid_ruc(ruc: str) -> bool:
+        # Digito verificador de SUNAT: modulo 11 sobre los diez primeros
+        # digitos con pesos fijos. Descarta casi todas las cadenas de once
+        # cifras que el OCR inventa a partir de telefonos o codigos de barras.
+        weights = (5, 4, 3, 2, 7, 6, 5, 4, 3, 2)
+        total = sum(int(digit) * weight for digit, weight in zip(ruc, weights))
+        remainder = 11 - (total % 11)
+        if remainder == 10:
+            remainder = 0
+        elif remainder == 11:
+            remainder = 1
+        return remainder == int(ruc[10])
 
     def _extract_name(self, lines: List[str]) -> str:
         ignored_words = (

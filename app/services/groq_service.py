@@ -38,6 +38,11 @@ class GroqService:
             '"dataFields": { "key": "value" }'
             '} '
             "El issuerRuc son los 11 digitos del RUC del emisor, sin espacios ni guiones. "
+            "El campo name es el concepto o item comprado (p.ej. 'Almuerzo', 'Taxi', "
+            "'Utiles de oficina'), nunca un aviso legal ni un encabezado del documento "
+            "(frases como 'no valido como comprobante', 'representa...', razon social "
+            "del emisor o membretes similares). Si no identificas el concepto comprado, "
+            "responde 'Comprobante OCR' en name en lugar de copiar ese tipo de aviso. "
             "Si no encuentras un dato, usa los valores ya inferidos en el texto del usuario. "
             "Si un dato no aparece ni fue inferido, responde null: nunca inventes un "
             "numero de comprobante ni un RUC, porque el backend los usa para detectar "
@@ -225,6 +230,11 @@ class GroqService:
             "ruc", "dni", "boleta", "factura", "ticket", "recibo", "fecha",
             "total", "subtotal", "igv", "importe", "monto", "direccion",
             "telefono", "cliente",
+            # Avisos legales/membretes que preceden al concepto en boletas
+            # peruanas: sin esto, _extract_name devolvia el aviso como si
+            # fuera el item comprado (ver OBS del ciclo1 de QA).
+            "no valido como comprobante", "no es comprobante", "representa",
+            "r.u.c", "www.", "sac", "s.a.c", "s.a.", "eirl",
         )
 
         for line in lines[:10]:
